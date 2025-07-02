@@ -11,4 +11,4 @@ Criterias fullfilling in the Shift Planner :
 9. rest people left will be automatically given G shift
 10. There should be a minimum 5 week gap when the same person is alotted the shift (1, 2 or 3) again
 11. If there are 2 person in shifts then their both experience can be like (3,1) or (2,2) mostly
-13. Almost every person with same year of experience should have almost same number of total shifts at the end of 21 week shift
+12. Almost every person with same year of experience should have almost same number of total shifts at the end of 21 week shift
