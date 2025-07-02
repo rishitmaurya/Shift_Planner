@@ -1,4 +1,4 @@
-Creterias fullfilling in the Shift Planner : 
+Criterias fullfilling in the Shift Planner : 
 
 1. people with Experience 0 should always be given shift G
 2. every person should be allocated only one shift either G, 1, 2 or 3.
