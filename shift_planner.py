@@ -9,16 +9,7 @@ class ShiftPlanner:
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
 
-    # def assigned_recently(self, eid, shift_code, current_week):
-    #     if current_week <= 5:
-    #         return False  # first few weeks: can't go negative
-    #     self.cursor.execute("""
-    #         SELECT week FROM ShiftAssignments 
-    #         WHERE employee_id = ? AND shift_code = ? AND week >= ?
-    #     """, (eid, shift_code, current_week - 5))
-    #     return self.cursor.fetchone() is not None
-
-    def assigned_shift_1_2_3_recently(self, eid, current_week, gap=4):
+    def assigned_shift_1_2_3_recently(self, eid, current_week, gap=5):
         if current_week <= gap:
             return False
         self.cursor.execute("""
@@ -53,12 +44,20 @@ class ShiftPlanner:
         row = self.cursor.fetchone()
         return row[0] if row else None
 
-    def get_next(self, assigned_ids, conditions):
+    def get_next(self, assigned_ids, conditions, band=None, experience=None):
+        filters = []
+        if band:
+            filters.append(f"Band = '{band}'")
+        if experience is not None:
+            filters.append(f"Experience = {experience}")
+        if conditions:
+            filters.append(conditions)
+        where_clause = " AND ".join(filters) if filters else "1=1"
         sql = f"""
-            SELECT id, Name, Band, Domain, Sub_Domain 
-            FROM Employees 
+            SELECT id, Name, Band, Experience, Domain, Sub_Domain
+            FROM Employees
             WHERE id NOT IN ({','.join(map(str, assigned_ids)) if assigned_ids else 'NULL'})
-              AND {conditions}
+              AND {where_clause}
         """
         self.cursor.execute(sql)
         return self.cursor.fetchall()
@@ -77,6 +76,8 @@ class ShiftPlanner:
         """)
 
         self.cursor.execute("DELETE FROM ShiftAssignments")
+
+        rotation_map = {'1': ['2', '3'], '2': ['3', '1'], '3': ['1', '2']}
 
         for week in range(1, self.weeks + 1):
             assigned_ids = set()
@@ -99,9 +100,9 @@ class ShiftPlanner:
             eligible_1 = self.get_next(assigned_ids, "Band='Associate'")
             eligible_1 = list(eligible_1)
             eligible_1.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            
+            # No shuffle to keep balancing strict
 
-            for eid, _, _, domain, sub_domain in eligible_1:
+            for eid, _, _, exp, domain, sub_domain in eligible_1:
                 if shift1_needed == 0:
                     break
                 if last_domain1 and domain == last_domain1:
@@ -112,7 +113,7 @@ class ShiftPlanner:
                     continue
                 last_shift = self.get_last_shift_1_2_3(eid)
                 if last_shift == '1':
-                    continue
+                    continue  # enforce shift rotation
                 self.cursor.execute(
                     "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
                     (eid, '1', week)
@@ -131,10 +132,9 @@ class ShiftPlanner:
             eligible_2 = self.get_next(assigned_ids, "Band='Layam'")
             eligible_2 = list(eligible_2)
             eligible_2.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            random.shuffle(eligible_2)
+            # No shuffle to keep balancing strict
 
-            for eid, _, _, domain, sub_domain in eligible_2:
-                exp = self.get_employee_experience(eid)
+            for eid, _, _, exp, domain, sub_domain in eligible_2:
                 last_shift = self.get_last_shift_1_2_3(eid)
                 if domain == 'FD-SEL':
                     if shift2_needed['FD-SEL'] == 0:
@@ -144,7 +144,7 @@ class ShiftPlanner:
                     if self.assigned_shift_1_2_3_recently(eid, week):
                         continue
                     if last_shift == '2':
-                        continue
+                        continue  # enforce shift rotation
                     if first_exp2 is None:
                         first_exp2 = exp
                     else:
@@ -161,7 +161,7 @@ class ShiftPlanner:
                     if self.assigned_shift_1_2_3_recently(eid, week):
                         continue
                     if last_shift == '2':
-                        continue
+                        continue  # enforce shift rotation
                     if first_exp2 is None:
                         first_exp2 = exp
                     else:
@@ -185,9 +185,9 @@ class ShiftPlanner:
             eligible_3 = self.get_next(assigned_ids, "Band IN ('Associate', 'Layam')")
             eligible_3 = list(eligible_3)
             eligible_3.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            random.shuffle(eligible_3)
+            # No shuffle to keep balancing strict
 
-            for eid, _, band, domain, sub_domain in eligible_3:
+            for eid, _, band, exp, domain, sub_domain in eligible_3:
                 if shift3_needed[band] == 0:
                     continue
                 if last_domain3 and domain == last_domain3:
@@ -198,8 +198,7 @@ class ShiftPlanner:
                     continue
                 last_shift = self.get_last_shift_1_2_3(eid)
                 if last_shift == '3':
-                    continue
-                exp = self.get_employee_experience(eid)
+                    continue  # enforce shift rotation
                 if first_exp3 is None:
                     first_exp3 = exp
                 else:
