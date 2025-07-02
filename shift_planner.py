@@ -77,7 +77,23 @@ class ShiftPlanner:
 
         self.cursor.execute("DELETE FROM ShiftAssignments")
 
-        rotation_map = {'1': ['2', '3'], '2': ['3', '1'], '3': ['1', '2']}
+        # Track last domain and subdomain per shift globally across weeks
+        last_domain_shift1 = None
+        last_subdomain_shift1 = None
+
+        last_subdomain_shift2 = None
+
+        last_domain_shift3 = {'Associate': None, 'Layam': None}
+        last_subdomain_shift3 = {'Associate': None, 'Layam': None}
+
+        def group_shuffle(lst):
+            from itertools import groupby
+            result = []
+            for _, group in groupby(lst, key=lambda x: self.get_shift_1_2_3_count(x[0])):
+                group_list = list(group)
+                random.shuffle(group_list)
+                result.extend(group_list)
+            return result
 
         for week in range(1, self.weeks + 1):
             assigned_ids = set()
@@ -94,79 +110,87 @@ class ShiftPlanner:
 
             # SHIFT 1 — Associate
             shift1_needed = 1
-            last_domain1 = None
-            last_subdomain1 = None
 
             eligible_1 = self.get_next(assigned_ids, "Band='Associate'")
             eligible_1 = list(eligible_1)
             eligible_1.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            # No shuffle to keep balancing strict
+            eligible_1 = group_shuffle(eligible_1)
 
+            # First pass: strict alternation
             for eid, _, _, exp, domain, sub_domain in eligible_1:
                 if shift1_needed == 0:
                     break
-                if last_domain1 and domain == last_domain1:
+                if last_domain_shift1 and domain == last_domain_shift1:
                     continue
-                if domain == 'FD-SEL' and sub_domain == last_subdomain1:
+                if domain == 'FD-SEL' and sub_domain == last_subdomain_shift1:
                     continue
                 if self.assigned_shift_1_2_3_recently(eid, week):
                     continue
                 last_shift = self.get_last_shift_1_2_3(eid)
                 if last_shift == '1':
-                    continue  # enforce shift rotation
+                    continue
                 self.cursor.execute(
                     "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
                     (eid, '1', week)
                 )
                 assigned_ids.add(eid)
                 shift1_needed -= 1
-                last_domain1 = domain
-                if domain == 'FD-SEL':
-                    last_subdomain1 = sub_domain
+                last_domain_shift1 = domain
+                last_subdomain_shift1 = sub_domain
+
+            # Fallback pass: relax alternation constraints if needed
+            if shift1_needed > 0:
+                for eid, _, _, exp, domain, sub_domain in eligible_1:
+                    if eid in assigned_ids:
+                        continue
+                    if self.assigned_shift_1_2_3_recently(eid, week):
+                        continue
+                    last_shift = self.get_last_shift_1_2_3(eid)
+                    if last_shift == '1':
+                        continue
+                    self.cursor.execute(
+                        "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
+                        (eid, '1', week)
+                    )
+                    assigned_ids.add(eid)
+                    shift1_needed -= 1
+                    last_domain_shift1 = domain
+                    last_subdomain_shift1 = sub_domain
+                    break
 
             # SHIFT 2 — Layam: 1 AD-SEL + 1 FD-SEL
             shift2_needed = {'AD-SEL': 1, 'FD-SEL': 1}
-            last_subdomain2 = None
-            first_exp2 = None  
 
             eligible_2 = self.get_next(assigned_ids, "Band='Layam'")
             eligible_2 = list(eligible_2)
             eligible_2.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            # No shuffle to keep balancing strict
+            eligible_2 = group_shuffle(eligible_2)
 
+            # First pass: strict alternation
             for eid, _, _, exp, domain, sub_domain in eligible_2:
-                last_shift = self.get_last_shift_1_2_3(eid)
                 if domain == 'FD-SEL':
                     if shift2_needed['FD-SEL'] == 0:
                         continue
-                    if last_subdomain2 and sub_domain == last_subdomain2:
+                    if last_subdomain_shift2 and sub_domain == last_subdomain_shift2:
                         continue
                     if self.assigned_shift_1_2_3_recently(eid, week):
                         continue
+                    last_shift = self.get_last_shift_1_2_3(eid)
                     if last_shift == '2':
-                        continue  # enforce shift rotation
-                    if first_exp2 is None:
-                        first_exp2 = exp
-                    else:
-                        if abs(first_exp2 - exp) > 2:
-                            continue  
+                        continue
                     self.cursor.execute(
                         "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
                         (eid, '2', week)
                     )
                     assigned_ids.add(eid)
                     shift2_needed['FD-SEL'] -= 1
-                    last_subdomain2 = sub_domain
+                    last_subdomain_shift2 = sub_domain
                 elif domain == 'AD-SEL' and shift2_needed['AD-SEL'] > 0:
                     if self.assigned_shift_1_2_3_recently(eid, week):
                         continue
+                    last_shift = self.get_last_shift_1_2_3(eid)
                     if last_shift == '2':
-                        continue  # enforce shift rotation
-                    if first_exp2 is None:
-                        first_exp2 = exp
-                    else:
-                        if abs(first_exp2 - exp) > 2:
-                            continue
+                        continue
                     self.cursor.execute(
                         "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
                         (eid, '2', week)
@@ -176,45 +200,85 @@ class ShiftPlanner:
                 if sum(shift2_needed.values()) == 0:
                     break
 
+            # Fallback pass: relax alternation constraints if needed
+            if sum(shift2_needed.values()) > 0:
+                for eid, _, _, exp, domain, sub_domain in eligible_2:
+                    if eid in assigned_ids:
+                        continue
+                    if self.assigned_shift_1_2_3_recently(eid, week):
+                        continue
+                    last_shift = self.get_last_shift_1_2_3(eid)
+                    if last_shift == '2':
+                        continue
+                    if domain in shift2_needed and shift2_needed[domain] > 0:
+                        self.cursor.execute(
+                            "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
+                            (eid, '2', week)
+                        )
+                        assigned_ids.add(eid)
+                        shift2_needed[domain] -= 1
+                    if sum(shift2_needed.values()) == 0:
+                        break
+
             # SHIFT 3 — 1 Associate + 1 Layam
             shift3_needed = {'Associate': 1, 'Layam': 1}
-            last_domain3 = None
-            last_subdomain3 = None
-            first_exp3 = None
 
             eligible_3 = self.get_next(assigned_ids, "Band IN ('Associate', 'Layam')")
             eligible_3 = list(eligible_3)
             eligible_3.sort(key=lambda row: self.get_shift_1_2_3_count(row[0]))
-            # No shuffle to keep balancing strict
+            eligible_3 = group_shuffle(eligible_3)
 
+            # First pass: strict alternation
             for eid, _, band, exp, domain, sub_domain in eligible_3:
                 if shift3_needed[band] == 0:
                     continue
-                if last_domain3 and domain == last_domain3:
+                if last_domain_shift3[band] and domain == last_domain_shift3[band]:
                     continue
-                if domain == 'FD-SEL' and sub_domain == last_subdomain3:
+                if domain == 'FD-SEL' and last_subdomain_shift3[band] == sub_domain:
                     continue
                 if self.assigned_shift_1_2_3_recently(eid, week):
                     continue
                 last_shift = self.get_last_shift_1_2_3(eid)
                 if last_shift == '3':
-                    continue  # enforce shift rotation
-                if first_exp3 is None:
-                    first_exp3 = exp
-                else:
-                    if abs(first_exp3 - exp) > 2:
-                        continue
+                    continue
                 self.cursor.execute(
                     "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
                     (eid, '3', week)
                 )
                 assigned_ids.add(eid)
                 shift3_needed[band] -= 1
-                last_domain3 = domain
+                last_domain_shift3[band] = domain
                 if domain == 'FD-SEL':
-                    last_subdomain3 = sub_domain
+                    last_subdomain_shift3[band] = sub_domain
+                else:
+                    last_subdomain_shift3[band] = None
                 if sum(shift3_needed.values()) == 0:
                     break
+
+            # Fallback pass: relax alternation constraints if needed
+            if sum(shift3_needed.values()) > 0:
+                for eid, _, band, exp, domain, sub_domain in eligible_3:
+                    if eid in assigned_ids:
+                        continue
+                    if self.assigned_shift_1_2_3_recently(eid, week):
+                        continue
+                    last_shift = self.get_last_shift_1_2_3(eid)
+                    if last_shift == '3':
+                        continue
+                    if shift3_needed.get(band, 0) > 0:
+                        self.cursor.execute(
+                            "INSERT INTO ShiftAssignments (employee_id, shift_code, week) VALUES (?, ?, ?)",
+                            (eid, '3', week)
+                        )
+                        assigned_ids.add(eid)
+                        shift3_needed[band] -= 1
+                        last_domain_shift3[band] = domain
+                        if domain == 'FD-SEL':
+                            last_subdomain_shift3[band] = sub_domain
+                        else:
+                            last_subdomain_shift3[band] = None
+                    if sum(shift3_needed.values()) == 0:
+                        break
 
             # Remaining → Shift G
             remaining = self.get_next(assigned_ids, "1=1")
