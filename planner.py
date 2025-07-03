@@ -161,8 +161,19 @@ class ShiftPlanner:
         base_idxs = self.df.index[exp > 0].tolist()
         pattern   = ["1", "2", "2", "3", "3"]
 
+        # track the last week each idx was assigned any shift
+        last_assigned: dict[int,int] = {}
+
         for wk_num, col in enumerate(week_cols, start=1):
-            idxs = base_idxs.copy()
+            # pick only those with at least a gap of 5, else 4, else 3
+            for gap in (5, 4, 3):
+                elig = [i for i in base_idxs
+                        if wk_num - last_assigned.get(i, 0) >= gap]
+                if len(elig) >= len(pattern):
+                    idxs = elig.copy()
+                    break
+            else:
+                idxs = base_idxs.copy()
 
             idxs = self.choose_shift1_associate(idxs, wk_num)
             idxs = self.choose_shift2_layam(idxs, wk_num)
@@ -170,8 +181,10 @@ class ShiftPlanner:
             # new SHIFT-3: one Associate + one Layam
             idxs = self.choose_shift3_associates(idxs, wk_num)
 
+            # assign shifts and record assignment week
             for i, shift in zip(idxs, pattern):
                 self.df.at[i, col] = shift
+                last_assigned[i] = wk_num
 
     def enforce_pair_alternation(self, idxs, pos_a, pos_b):
         """
@@ -224,5 +237,9 @@ class ShiftPlanner:
         self.add_weeks()
         self.assign_zero_exp_shift()
         self.assign_exp_shifts()
+        # fill any remaining empty slots with "G"
+        for wk in range(1, self.num_weeks + 1):
+            col = f"Week {wk}"
+            self.df.loc[self.df[col] == "", col] = "G"
         self.print_data()
         self.save_csv()
